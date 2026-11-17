@@ -13,19 +13,32 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 import time
+import unicodedata
 from collections import defaultdict
 from multiprocessing import Pool
 from pathlib import Path
 
 import pymupdf
 
-from readerguard.pdf.validator import scan_pdf
-from readerguard.textscan import tokens
+from readerguard import scan
 
+
+_TOKEN = re.compile(r"[a-z0-9]{3,}")
+
+
+def tokens(text: str) -> list[str]:
+    """Word tokens, for measuring how much of the text layer safe_text keeps."""
+    return _TOKEN.findall(unicodedata.normalize("NFKC", text).lower())
 
 def validate(path):
-    return scan_pdf(Path(path).read_bytes(), str(path))
+    return scan(Path(path))
+
+
+def verdict(r) -> str:
+    """fail = reject; warn = accepted with something removed; pass = accepted as is."""
+    return "fail" if not r.safe else "warn" if r.removed else "pass"
 
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
 pymupdf.TOOLS.mupdf_display_errors(False)
@@ -70,26 +83,26 @@ def run_attack(row: dict) -> dict:
     dt = time.time() - t
     doc = pymupdf.open(f)
     naive = "".join(p.get_text() for p in doc)
+    pages = doc.page_count
     return {**row,
             "exposed_pymupdf": can in naive,
             "exposed_pdfminer": can in pdfminer_text(f),
             "exposed_pdfplumber": can in pdfplumber_text(f),
             "exposed_side": can in side_text(f),
-            "verdict": rep.verdict, "checks": sorted({x.check for x in rep.findings if x.severity != "info"}),
-            "leaked": can in rep.safe_text, "seconds": dt, "pages": rep.pages}
+            "verdict": verdict(rep), "checks": sorted(rep.removed),
+            "leaked": can in rep.safe_text, "seconds": dt, "pages": pages}
 
 
 def run_clean(path: str) -> dict:
     t = time.time()
     rep = validate(path)
     dt = time.time() - t
-    raw = [tokens(x) for x in rep.raw_pages]
-    safe = [set(tokens(x)) for x in rep.safe_pages]
+    raw = [tokens(p.get_text()) for p in pymupdf.open(path)]
+    safe = [set(tokens(x)) for x in rep.safe_text.split("\f")] if rep.safe else []
     n = sum(len(r) for r in raw)
     kept = sum(sum(tk in s for tk in r) for r, s in zip(raw, safe))
-    return {"file": path, "verdict": rep.verdict, "pages": rep.pages, "seconds": dt,
-            "retention": kept / n if n else 1.0, "tokens": n,
-            "findings": [x.to_dict() for x in rep.findings if x.severity != "info"]}
+    return {"file": path, "verdict": verdict(rep), "pages": len(raw), "seconds": dt,
+            "retention": kept / n if n else 1.0, "tokens": n, "reasons": rep.reasons}
 
 
 def pct(a, b):
@@ -164,8 +177,7 @@ def main():
     for k, rs in clean.items():
         for r in rs:
             if r["verdict"] != "pass":
-                fs = "; ".join(f"{x['check']}/{x.get('reason', '')}: {x.get('text', x['message'])[:80]}"
-                               for x in r["findings"] if x["severity"] in ("medium", "high", "critical"))
+                fs = "; ".join(x[:80] for x in r["reasons"])
                 L.append(f"- `{Path(r['file']).name}` ({k}) **{r['verdict']}**: {fs}")
     (Path("bench/RESULTS.md")).write_text("\n".join(L) + "\n")
     print("\n".join(L))

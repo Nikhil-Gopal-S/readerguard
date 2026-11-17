@@ -65,7 +65,7 @@ def _extract(row):
             out["loader"] = t[:MAXCH]
         except Exception as e:
             out["loader"], out["loader_err"] = None, type(e).__name__
-        out["safe_text"] = (scan(row["file"]).safe_text or "")[:MAXCH]
+        out["safe_text"] = (scan(Path(row["file"])).safe_text or "")[:MAXCH]
     return out
 
 

@@ -1,18 +1,18 @@
 """Document-level checks: active content, side channels that carry text outside the page content,
-and structural tricks (hidden layers, incremental updates)."""
+and structural tricks (hidden layers)."""
 from __future__ import annotations
 
 import re
 
 import pymupdf
 
-from ..findings import Finding, clip
+from ..findings import Finding
 
 _ACTIVE = [
-    (re.compile(rb"/(JS|JavaScript)\b"), "javascript", "high", "document contains JavaScript"),
-    (re.compile(rb"/Launch\b"), "launch_action", "high", "document contains a Launch action (runs an external program)"),
-    (re.compile(rb"/(SubmitForm|ImportData)\b"), "form_action", "medium", "document submits or imports form data"),
-    (re.compile(rb"/RichMedia\b|/XFA\b"), "rich_content", "medium", "document contains RichMedia or XFA content"),
+    (re.compile(rb"/(JS|JavaScript)\b"), "javascript", "document contains JavaScript"),
+    (re.compile(rb"/Launch\b"), "launch_action", "document contains a Launch action (runs an external program)"),
+    (re.compile(rb"/(SubmitForm|ImportData)\b"), "form_action", "document submits or imports form data"),
+    (re.compile(rb"/RichMedia\b|/XFA\b"), "rich_content", "document contains RichMedia or XFA content"),
 ]
 
 
@@ -53,7 +53,26 @@ def side_channel_texts(doc) -> list[tuple[str, int | None, str]]:
     return out
 
 
-def structural_findings(doc, raw: bytes) -> list[Finding]:
+# A text render mode that adds glyphs to the clip path (4-7). The text-stripped copy loses such clips, so the ink
+# test cannot judge what is painted through them, and clip-only text (7) is never traced: refused outright.
+_CLIP_TR = re.compile(rb"(?:^|[\s\[\]()<>/{}])\+?0*[4-7](?:\.0*)?(?:\s|%[^\r\n]*[\r\n])+Tr(?![^\s\[\]()<>/{}%])")
+
+
+def uses_clip_text(doc) -> bool:
+    """Any content stream (pages, forms, Type3 glyphs, annotation appearances) that sets render mode 4-7."""
+    for x in range(1, doc.xref_length()):
+        try:
+            if not doc.xref_is_stream(x) or doc.xref_get_key(x, "Subtype")[1] == "/Image":
+                continue
+            data = doc.xref_stream(x)
+        except Exception:
+            continue
+        if data and b"Tr" in data and _CLIP_TR.search(data):
+            return True
+    return False
+
+
+def structural_findings(doc) -> list[Finding]:
     f: list[Finding] = []
     seen = set()
     for x in range(1, doc.xref_length()):
@@ -61,14 +80,14 @@ def structural_findings(doc, raw: bytes) -> list[Finding]:
             obj = doc.xref_object(x, compressed=False).encode("latin-1", "ignore")
         except Exception:
             continue
-        for rx, check, sev, msg in _ACTIVE:
+        for rx, check, msg in _ACTIVE:
             if check not in seen and rx.search(obj):
                 seen.add(check)
-                f.append(Finding(check=check, severity=sev, message=msg))
+                f.append(Finding(check=check, message=msg))
     cat = doc.pdf_catalog()
     oa = doc.xref_get_key(cat, "OpenAction")
     if oa[0] != "null" and "javascript" in seen:
-        f.append(Finding(check="open_action", severity="high", message="JavaScript runs when the document opens"))
+        f.append(Finding(check="open_action", message="JavaScript runs when the document opens"))
 
     try:
         ocgs = doc.get_ocgs() or {}
@@ -76,18 +95,16 @@ def structural_findings(doc, raw: bytes) -> list[Finding]:
         ocgs = {}
     off = [v.get("name", "?") for v in ocgs.values() if not v.get("on", True)]
     if off:
-        f.append(Finding(check="hidden_layer", severity="high", reason="ocg_off", text=clip(", ".join(off)),
+        f.append(Finding(check="hidden_layer",
                          message=f"{len(off)} optional-content layer(s) are off by default; their text is "
                                  "invisible in viewers but extracted by some parsers"))
 
-    n = doc.embfile_count()
+    # attached files: the EmbeddedFiles name tree, file attachment annotations, and any other file
+    # specification that carries an embedded stream (/EF), wherever it is referenced from
+    n = doc.embfile_count() + sum(a.type[0] == pymupdf.PDF_ANNOT_FILE_ATTACHMENT for p in doc for a in p.annots())
+    ef = sum(doc.xref_get_key(x, "EF")[0] != "null" for x in range(1, doc.xref_length()))
+    n = max(n, ef)
     if n:
-        f.append(Finding(check="embedded_file", severity="medium",
+        f.append(Finding(check="embedded_file",
                          message=f"{n} embedded file(s); loaders that unpack attachments will ingest them"))
-
-    eofs = raw.count(b"%%EOF")
-    if eofs > 1:
-        f.append(Finding(check="incremental_update", severity="low", reason=f"{eofs}_revisions",
-                         message=f"file has {eofs} revisions (incremental updates); earlier revisions can hide "
-                                 "or shadow content"))
     return f

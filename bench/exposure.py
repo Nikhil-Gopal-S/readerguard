@@ -83,7 +83,7 @@ def _pdfminer(p):
 
 def _readerguard(p):
     from readerguard import scan
-    return scan(str(p)).safe_text
+    return scan(Path(p)).safe_text
 
 
 LOADERS = {

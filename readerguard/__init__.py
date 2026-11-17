@@ -1,17 +1,19 @@
-"""readerguard: check documents and web pages before they reach a RAG index or an LLM.
+"""readerguard: rebuild documents and web pages into visible text before they reach a RAG index or an LLM.
 
     from readerguard import scan
-    r = scan("upload.docx")            # path, URL, bytes or file object
-    r.safe, r.message                  # True/False, "success" / "not safe: <reasons>"
-    r.safe_text                        # visible text only
+    r = scan(Path("upload.docx"))      # Path, bytes, file object, or an http(s) URL str; never raises
+    r.safe, r.message                  # True = accept, False = reject; "accepted" / "rejected: <reason>"
+    r.safe_text                        # visible text only (empty on reject)
+    r.removed                          # what was left out, e.g. {"hidden_text": 3, "macros": 1}
     r.to_dict()                        # JSON-ready
 
-Formats: PDF, HTML / URLs, SVG, DOCX / PPTX / XLSX (+ macro-enabled), OpenDocument, RTF, legacy
-.doc/.xls/.ppt (macro check only), Markdown, plain text, PNG / JPEG / GIF / WebP / BMP / TIFF.
+Accepted: PDF, HTML / URLs, DOCX / PPTX / XLSX (+ macro-enabled), Markdown and plain text (UTF-8 / UTF-16),
+PNG / JPEG / GIF / WebP. Everything else (executables, archives, legacy Office, RTF, OpenDocument, SVG,
+BMP / TIFF, unknown binary) is rejected at the gate.
 """
-from .api import ScanResult, scan, scan_report, sniff
+from . import limits
+from .api import ScanResult, scan, sniff
 from .fetch import FetchOptions
-from .findings import SEVERITIES, Finding, Report
 
-__all__ = ["scan", "scan_report", "sniff", "ScanResult", "FetchOptions", "Report", "Finding", "SEVERITIES"]
-__version__ = "0.2.0"
+__all__ = ["scan", "sniff", "ScanResult", "FetchOptions", "limits"]
+__version__ = "0.3.0"

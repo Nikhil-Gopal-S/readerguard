@@ -447,10 +447,11 @@ def _decode_tags(s):
 def _scan(row):
     from readerguard import scan
     try:
-        r = scan(row["file"])
-        return {**row, "verdict": r.verdict, "safe": r.safe,
+        r = scan(Path(row["file"]))
+        verdict = "fail" if not r.safe else "warn" if r.removed else "pass"     # reject / accept with removals
+        return {**row, "verdict": verdict, "safe": r.safe,
                 "leaked": bool(row.get("canary")) and row["canary"] in _decode_tags(r.safe_text),
-                "checks": sorted({f.check for f in r.findings if f.severity != "info"}), "message": r.message}
+                "checks": sorted(r.removed), "message": r.message}
     except Exception as e:
         return {**row, "verdict": "error", "safe": False, "leaked": False, "checks": [], "message": repr(e)}
 
